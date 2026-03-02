@@ -24,10 +24,5 @@ jobs:
     - name: Build
       run: make build
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Test with Docker Compose
-      run: |
-        docker compose up --build --abort-on-container-exit --exit-code-from test test
-        docker compose down
+    - name: Test
+      run: make test
