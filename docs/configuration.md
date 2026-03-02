@@ -19,6 +19,11 @@ mitm:
   domains:
     - api.openai.com
     - chat.openai.com
+  log_request_response_bodies: true
+  log_body_disabled_domains:
+    - auth.openai.com
+  log_body_enabled_domains:
+    - api.openai.com
 
 sanitizer:
   enabled: true
@@ -66,6 +71,9 @@ Controls TLS interception behavior.
 
 - `enabled`: global switch for MITM behavior
 - `domains`: allowlist of domains eligible for interception
+- `log_request_response_bodies`: default behavior for request/response preview logging in audit
+- `log_body_disabled_domains`: domains where body preview logging is always disabled
+- `log_body_enabled_domains`: domains where body preview logging is always enabled (useful when the global switch is off)
 
 If `enabled: false`, Velar stays in tunnel behavior for HTTPS.
 
@@ -137,6 +145,23 @@ rules:
   - id: allow-others
     action: allow
 ```
+
+### Configure per-domain request/response preview logging
+
+```yaml
+mitm:
+  enabled: true
+  log_request_response_bodies: true
+  log_body_disabled_domains:
+    - auth.openai.com
+
+  # You can also invert behavior: disable globally and enable only chosen domains
+  # log_request_response_bodies: false
+  # log_body_enabled_domains:
+  #   - api.openai.com
+```
+
+`log_body_disabled_domains` has priority over `log_body_enabled_domains`. Domain patterns support exact hosts and wildcards like `*.anthropic.com`.
 
 ## Environment Variables
 

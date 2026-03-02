@@ -39,8 +39,11 @@ type Config struct {
 }
 
 type MITM struct {
-	Enabled bool     `json:"enabled"`
-	Domains []string `json:"domains"`
+	Enabled                  bool     `json:"enabled"`
+	Domains                  []string `json:"domains"`
+	LogRequestResponseBodies bool     `json:"log_request_response_bodies"`
+	LogBodyEnabledDomains    []string `json:"log_body_enabled_domains"`
+	LogBodyDisabledDomains   []string `json:"log_body_disabled_domains"`
 }
 
 type Sanitizer struct {
@@ -73,7 +76,9 @@ func Default() Config {
 	return Config{
 		Port:    defaultPort,
 		LogFile: defaultLogFile,
-		MITM:    MITM{},
+		MITM: MITM{
+			LogRequestResponseBodies: true,
+		},
 		Sanitizer: Sanitizer{
 			Types:            []string{"email", "phone", "api_key", "jwt", "aws_access_key", "aws_secret_key", "aws_session_token", "gcp_api_key", "gcp_service_account", "azure_connection_string", "azure_sas_token", "private_key", "db_url", "high_entropy", "hex_secret"},
 			RestoreResponses: true,
@@ -225,6 +230,8 @@ func parseYAMLLite(r *strings.Reader, cfg *Config) error {
 	inMatch := false
 	inMITM := false
 	inMITMDomains := false
+	inMITMLogBodyEnabledDomains := false
+	inMITMLogBodyDisabledDomains := false
 	inSanitizer := false
 	inSanitizerTypes := false
 	inSanitizeKeys := false
@@ -263,6 +270,8 @@ func parseYAMLLite(r *strings.Reader, cfg *Config) error {
 			inSkipKeys = false
 			inMITM = true
 			inMITMDomains = false
+			inMITMLogBodyEnabledDomains = false
+			inMITMLogBodyDisabledDomains = false
 			inNotifications = false
 			continue
 		case line == "sanitizer:":
@@ -292,6 +301,20 @@ func parseYAMLLite(r *strings.Reader, cfg *Config) error {
 			continue
 		case line == "domains:" && inMITM:
 			inMITMDomains = true
+			inMITMLogBodyEnabledDomains = false
+			inMITMLogBodyDisabledDomains = false
+			continue
+		case line == "log_body_enabled_domains:" && inMITM:
+			cfg.MITM.LogBodyEnabledDomains = nil
+			inMITMDomains = false
+			inMITMLogBodyEnabledDomains = true
+			inMITMLogBodyDisabledDomains = false
+			continue
+		case line == "log_body_disabled_domains:" && inMITM:
+			cfg.MITM.LogBodyDisabledDomains = nil
+			inMITMDomains = false
+			inMITMLogBodyEnabledDomains = false
+			inMITMLogBodyDisabledDomains = true
 			continue
 		case line == "types:" && inSanitizer:
 			cfg.Sanitizer.Types = nil
@@ -315,6 +338,18 @@ func parseYAMLLite(r *strings.Reader, cfg *Config) error {
 			domain := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(s.Text()), "-"))
 			if domain != "" {
 				cfg.MITM.Domains = append(cfg.MITM.Domains, domain)
+			}
+			continue
+		case inMITMLogBodyEnabledDomains && strings.HasPrefix(strings.TrimSpace(s.Text()), "-"):
+			domain := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(s.Text()), "-"))
+			if domain != "" {
+				cfg.MITM.LogBodyEnabledDomains = append(cfg.MITM.LogBodyEnabledDomains, domain)
+			}
+			continue
+		case inMITMLogBodyDisabledDomains && strings.HasPrefix(strings.TrimSpace(s.Text()), "-"):
+			domain := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(s.Text()), "-"))
+			if domain != "" {
+				cfg.MITM.LogBodyDisabledDomains = append(cfg.MITM.LogBodyDisabledDomains, domain)
 			}
 			continue
 		case inSanitizerTypes && strings.HasPrefix(strings.TrimSpace(s.Text()), "-"):
@@ -354,7 +389,11 @@ func parseYAMLLite(r *strings.Reader, cfg *Config) error {
 			cfg.LogFile = strings.TrimSpace(strings.TrimPrefix(line, "log_file:"))
 		case strings.HasPrefix(line, "enabled:") && inMITM:
 			inMITMDomains = false
+			inMITMLogBodyEnabledDomains = false
+			inMITMLogBodyDisabledDomains = false
 			cfg.MITM.Enabled = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "enabled:")), "true")
+		case strings.HasPrefix(line, "log_request_response_bodies:") && inMITM:
+			cfg.MITM.LogRequestResponseBodies = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "log_request_response_bodies:")), "true")
 		case strings.HasPrefix(line, "enabled:") && inONNXNER:
 			cfg.Sanitizer.Detectors.ONNXNER.Enabled = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "enabled:")), "true")
 		case strings.HasPrefix(line, "enabled:") && inSanitizer:

@@ -112,7 +112,7 @@ func New(addr string, p policy.Engine, c classifier.Classifier, a audit.Logger, 
 		if err != nil {
 			log.Printf("mitm disabled: cannot resolve CA path: %v", err)
 		} else {
-			pr.mitm = mitm.NewHandler(mitm.NewCAStore(baseDir), transport, p, c, a, inspector)
+			pr.mitm = mitm.NewHandler(mitm.NewCAStore(baseDir), transport, p, c, a, inspector, mitmCfg)
 		}
 	}
 	pr.httpServer = &http.Server{Addr: addr, Handler: http.HandlerFunc(pr.handle)}

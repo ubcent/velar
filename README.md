@@ -141,6 +141,13 @@ mitm:
   domains:
     - api.openai.com
     - chatgpt.com
+  log_request_response_bodies: true
+  log_body_disabled_domains:
+    - auth.openai.com
+  # If needed, invert behavior:
+  # log_request_response_bodies: false
+  # log_body_enabled_domains:
+  #   - api.openai.com
 sanitizer:
   enabled: true
   types:
