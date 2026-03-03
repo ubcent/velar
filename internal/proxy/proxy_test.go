@@ -57,7 +57,7 @@ func newTestProxy(t *testing.T, p policy.Engine, logger audit.Logger, mitmCfg co
 			s := sanitizer.New(sanitizer.DetectorsByName(sanitizerCfg.Types))
 			inspector = sanitizer.NewSanitizingInspector(s)
 		}
-		pr.mitm = mitm.NewHandler(mitm.NewCAStore(caDir), transport, p, classifier.HostClassifier{}, logger, inspector)
+		pr.mitm = mitm.NewHandler(mitm.NewCAStore(caDir), transport, p, classifier.HostClassifier{}, logger, inspector, mitmCfg)
 	}
 	server := httptest.NewServer(http.HandlerFunc(pr.handle))
 	return pr, server

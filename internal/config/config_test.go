@@ -94,3 +94,28 @@ func TestDefaultConfigHasSanitizeKeysAndSkipKeys(t *testing.T) {
 		t.Fatal("expected default skip_keys to be non-empty")
 	}
 }
+
+func TestParseYAMLLiteMITMBodyLoggingConfig(t *testing.T) {
+	cfg := Default()
+	err := parseYAMLLite(strings.NewReader(`mitm:
+  enabled: true
+  log_request_response_bodies: false
+  log_body_enabled_domains:
+    - api.openai.com
+    - *.anthropic.com
+  log_body_disabled_domains:
+    - api.x.ai
+`), &cfg)
+	if err != nil {
+		t.Fatalf("parseYAMLLite() error = %v", err)
+	}
+	if cfg.MITM.LogRequestResponseBodies {
+		t.Fatal("expected log_request_response_bodies to be false")
+	}
+	if len(cfg.MITM.LogBodyEnabledDomains) != 2 {
+		t.Fatalf("unexpected log_body_enabled_domains: %v", cfg.MITM.LogBodyEnabledDomains)
+	}
+	if len(cfg.MITM.LogBodyDisabledDomains) != 1 || cfg.MITM.LogBodyDisabledDomains[0] != "api.x.ai" {
+		t.Fatalf("unexpected log_body_disabled_domains: %v", cfg.MITM.LogBodyDisabledDomains)
+	}
+}

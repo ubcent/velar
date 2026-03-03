@@ -15,6 +15,7 @@ import (
 
 	"velar/internal/audit"
 	"velar/internal/classifier"
+	"velar/internal/config"
 	"velar/internal/policy"
 	"velar/internal/sanitizer"
 	"velar/internal/session"
@@ -43,13 +44,14 @@ type Handler struct {
 	classifier classifier.Classifier
 	audit      audit.Logger
 	sessions   *session.Store
+	mitmCfg    config.MITM
 }
 
-func NewHandler(ca *CAStore, transport *http.Transport, p policy.Engine, cls classifier.Classifier, logger audit.Logger, insp Inspector) *Handler {
+func NewHandler(ca *CAStore, transport *http.Transport, p policy.Engine, cls classifier.Classifier, logger audit.Logger, insp Inspector, mitmCfg config.MITM) *Handler {
 	if insp == nil {
 		insp = PassthroughInspector{}
 	}
-	h := &Handler{ca: ca, transport: transport, policy: p, classifier: cls, audit: logger, inspector: insp, sessions: session.NewStore()}
+	h := &Handler{ca: ca, transport: transport, policy: p, classifier: cls, audit: logger, inspector: insp, sessions: session.NewStore(), mitmCfg: mitmCfg}
 	if si, ok := insp.(*sanitizer.SanitizingInspector); ok {
 		si.WithSessions(h.sessions)
 	}
@@ -331,6 +333,10 @@ func (h *Handler) logAudit(r *http.Request, host string, decision policy.Result,
 	if h.audit == nil {
 		return
 	}
+	if !h.shouldLogBody(host) {
+		reqPreview = ""
+		respPreview = ""
+	}
 	entry := audit.Entry{Method: r.Method, Host: host, Path: r.URL.Path, Decision: string(decision.Decision), Reason: fmt.Sprintf("%s (%s)", decision.Reason, decision.RuleID), RequestBodyPreview: reqPreview, ResponseBodyPreview: respPreview}
 	if md, ok := sanitizer.AuditMetadataFromRequest(r); ok && md.Sanitized {
 		entry.Sanitized = true
@@ -340,6 +346,33 @@ func (h *Handler) logAudit(r *http.Request, host string, decision policy.Result,
 		}
 	}
 	_ = h.audit.Log(entry)
+}
+
+func (h *Handler) shouldLogBody(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, pattern := range h.mitmCfg.LogBodyDisabledDomains {
+		if domainMatches(host, pattern) {
+			return false
+		}
+	}
+	for _, pattern := range h.mitmCfg.LogBodyEnabledDomains {
+		if domainMatches(host, pattern) {
+			return true
+		}
+	}
+	return h.mitmCfg.LogRequestResponseBodies
+}
+
+func domainMatches(host, pattern string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), ".")
+	pattern = strings.Trim(strings.ToLower(strings.TrimSpace(pattern)), ".")
+	if host == "" || pattern == "" {
+		return false
+	}
+	if strings.HasPrefix(pattern, "*.") {
+		pattern = strings.TrimPrefix(pattern, "*.")
+	}
+	return host == pattern || strings.HasSuffix(host, "."+pattern)
 }
 
 func isStreamingResponse(resp *http.Response) bool {
