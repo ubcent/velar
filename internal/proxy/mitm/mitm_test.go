@@ -13,7 +13,9 @@ import (
 	"sync"
 	"testing"
 
+	"velar/internal/audit"
 	"velar/internal/classifier"
+	"velar/internal/config"
 	"velar/internal/policy"
 	"velar/internal/sanitizer"
 )
@@ -109,6 +111,7 @@ func TestInspectorCanRewriteRequestBody(t *testing.T) {
 		classifier.HostClassifier{},
 		nil,
 		rewriteInspector{},
+		config.MITM{},
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "https://proxy/", bytes.NewBufferString(`{"original":true}`))
@@ -143,6 +146,7 @@ func TestSanitizerInspectorRewritesSensitiveData(t *testing.T) {
 		classifier.HostClassifier{},
 		nil,
 		sanitizer.NewSanitizingInspector(s),
+		config.MITM{},
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "https://proxy/", bytes.NewBufferString(`{"prompt":"contact john@example.com or +123 456 7890"}`))
@@ -196,6 +200,7 @@ func TestSanitizerRestoresResponseBody(t *testing.T) {
 		classifier.HostClassifier{},
 		nil,
 		inspector,
+		config.MITM{},
 	)
 
 	// Wire the handler's sessions store to the inspector so restore works
@@ -263,6 +268,7 @@ func TestStreamingResponseSkipsInspectionAndRestore(t *testing.T) {
 		classifier.HostClassifier{},
 		nil,
 		inspector,
+		config.MITM{},
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "https://proxy/", nil)
@@ -285,5 +291,60 @@ func TestStreamingResponseSkipsInspectionAndRestore(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != "data: hello\n\ndata: world\n\n" {
 		t.Fatalf("stream body mismatch: %q", got)
+	}
+}
+
+type memoryAuditLogger struct {
+	entries []audit.Entry
+}
+
+func (m *memoryAuditLogger) Log(e audit.Entry) error {
+	m.entries = append(m.entries, e)
+	return nil
+}
+
+func TestLogAuditBodyPreviewCanBeDisabledPerDomain(t *testing.T) {
+	logger := &memoryAuditLogger{}
+	h := NewHandler(
+		NewCAStore(t.TempDir()),
+		&http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+		policy.NewRuleEngine(nil),
+		classifier.HostClassifier{},
+		logger,
+		PassthroughInspector{},
+		config.MITM{LogRequestResponseBodies: true, LogBodyDisabledDomains: []string{"api.openai.com"}},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "https://proxy/v1/chat/completions", bytes.NewBufferString(`{"prompt":"hello"}`))
+	h.logAudit(req, "api.openai.com", policy.Result{Decision: policy.Allow, Reason: "allow", RuleID: "r1"}, `{"prompt":"hello"}`, `{"id":"resp"}`)
+
+	if len(logger.entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(logger.entries))
+	}
+	if logger.entries[0].RequestBodyPreview != "" || logger.entries[0].ResponseBodyPreview != "" {
+		t.Fatalf("expected body previews to be empty, got req=%q resp=%q", logger.entries[0].RequestBodyPreview, logger.entries[0].ResponseBodyPreview)
+	}
+}
+
+func TestLogAuditBodyPreviewCanBeEnabledForSpecificDomain(t *testing.T) {
+	logger := &memoryAuditLogger{}
+	h := NewHandler(
+		NewCAStore(t.TempDir()),
+		&http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+		policy.NewRuleEngine(nil),
+		classifier.HostClassifier{},
+		logger,
+		PassthroughInspector{},
+		config.MITM{LogRequestResponseBodies: false, LogBodyEnabledDomains: []string{"*.openai.com"}},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "https://proxy/v1/chat/completions", bytes.NewBufferString(`{"prompt":"hello"}`))
+	h.logAudit(req, "api.openai.com", policy.Result{Decision: policy.Allow, Reason: "allow", RuleID: "r1"}, `{"prompt":"hello"}`, `{"id":"resp"}`)
+
+	if len(logger.entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(logger.entries))
+	}
+	if logger.entries[0].RequestBodyPreview == "" || logger.entries[0].ResponseBodyPreview == "" {
+		t.Fatalf("expected body previews to be present, got req=%q resp=%q", logger.entries[0].RequestBodyPreview, logger.entries[0].ResponseBodyPreview)
 	}
 }
