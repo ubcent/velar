@@ -47,7 +47,7 @@ func New(addr string, p policy.Engine, c classifier.Classifier, a audit.Logger, 
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     false,
+		ForceAttemptHTTP2:     true,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: false,
 		},

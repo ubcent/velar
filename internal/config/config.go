@@ -260,6 +260,8 @@ func parseYAMLLite(r *strings.Reader, cfg *Config) error {
 			inSanitizeKeys = false
 			inSkipKeys = false
 			inMITMDomains = false
+			inMITMLogBodyEnabledDomains = false
+			inMITMLogBodyDisabledDomains = false
 			inMITM = false
 			inNotifications = false
 			continue
@@ -277,6 +279,8 @@ func parseYAMLLite(r *strings.Reader, cfg *Config) error {
 		case line == "sanitizer:":
 			inMITM = false
 			inMITMDomains = false
+			inMITMLogBodyEnabledDomains = false
+			inMITMLogBodyDisabledDomains = false
 			inSanitizer = true
 			inSanitizerTypes = false
 			inSanitizeKeys = false
@@ -286,6 +290,8 @@ func parseYAMLLite(r *strings.Reader, cfg *Config) error {
 		case line == "notifications:":
 			inMITM = false
 			inMITMDomains = false
+			inMITMLogBodyEnabledDomains = false
+			inMITMLogBodyDisabledDomains = false
 			inSanitizer = false
 			inSanitizerTypes = false
 			inSanitizeKeys = false

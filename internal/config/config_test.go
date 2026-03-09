@@ -95,6 +95,29 @@ func TestDefaultConfigHasSanitizeKeysAndSkipKeys(t *testing.T) {
 	}
 }
 
+func TestParseYAMLLiteMITMBodyLoggingWithSanitizerTypes(t *testing.T) {
+	cfg := Default()
+	err := parseYAMLLite(strings.NewReader(`mitm:
+  enabled: true
+  log_request_response_bodies: false
+  log_body_enabled_domains:
+    - api2.cursor.sh
+sanitizer:
+  enabled: true
+  types:
+    - email
+`), &cfg)
+	if err != nil {
+		t.Fatalf("parseYAMLLite() error = %v", err)
+	}
+	if len(cfg.MITM.LogBodyEnabledDomains) != 1 || cfg.MITM.LogBodyEnabledDomains[0] != "api2.cursor.sh" {
+		t.Fatalf("unexpected log_body_enabled_domains: %v", cfg.MITM.LogBodyEnabledDomains)
+	}
+	if len(cfg.Sanitizer.Types) != 1 || cfg.Sanitizer.Types[0] != "email" {
+		t.Fatalf("unexpected sanitizer types: %v (expected [email], not leaked into MITM domains)", cfg.Sanitizer.Types)
+	}
+}
+
 func TestParseYAMLLiteMITMBodyLoggingConfig(t *testing.T) {
 	cfg := Default()
 	err := parseYAMLLite(strings.NewReader(`mitm:

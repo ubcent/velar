@@ -2,9 +2,11 @@ package mitm
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"golang.org/x/net/http2"
 
 	"velar/internal/audit"
 	"velar/internal/classifier"
@@ -301,6 +305,136 @@ type memoryAuditLogger struct {
 func (m *memoryAuditLogger) Log(e audit.Entry) error {
 	m.entries = append(m.entries, e)
 	return nil
+}
+
+func TestMITMHTTP2Request(t *testing.T) {
+	var (
+		gotPath   string
+		gotMethod string
+		mu        sync.Mutex
+	)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	caStore := NewCAStore(t.TempDir())
+	upstreamTransport := &http.Transport{
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		ForceAttemptHTTP2: true,
+	}
+	h := NewHandler(caStore, upstreamTransport, policy.NewRuleEngine(nil), classifier.HostClassifier{}, nil, PassthroughInspector{}, config.MITM{})
+
+	// Create in-memory connection pair: clientRaw <-> serverRaw
+	clientRaw, serverRaw := net.Pipe()
+	defer clientRaw.Close()
+
+	upstreamHost := upstream.Listener.Addr().String()
+	go h.HandleMITM(serverRaw, upstreamHost)
+
+	// TLS client requesting h2
+	clientTLS := tls.Client(clientRaw, &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"h2"},
+	})
+	if err := clientTLS.Handshake(); err != nil {
+		t.Fatalf("TLS handshake: %v", err)
+	}
+	if got := clientTLS.ConnectionState().NegotiatedProtocol; got != "h2" {
+		t.Fatalf("expected ALPN h2, got %q", got)
+	}
+
+	// HTTP/2 transport reusing the established TLS connection
+	tr := &http2.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+			return clientTLS, nil
+		},
+	}
+	defer tr.CloseIdleConnections()
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+upstreamHost+"/aiserver.v1.AiService/StreamChat",
+		bytes.NewBufferString("grpc-payload"))
+	req.Header.Set("Content-Type", "application/grpc")
+
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotPath != "/aiserver.v1.AiService/StreamChat" {
+		t.Fatalf("path = %q, want /aiserver.v1.AiService/StreamChat", gotPath)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+}
+
+func TestMITMHTTP1FallbackStillWorks(t *testing.T) {
+	// HTTP/1.1 clients (no h2 in NextProtos) must continue to work after the change.
+	// This is verified by the full existing HTTP/1.1 test suite above; here we
+	// explicitly confirm a client that does NOT request h2 still succeeds.
+	var gotBody []byte
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	caStore := NewCAStore(t.TempDir())
+	h := NewHandler(caStore,
+		&http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+		policy.NewRuleEngine(nil), classifier.HostClassifier{}, nil, PassthroughInspector{}, config.MITM{})
+
+	clientRaw, serverRaw := net.Pipe()
+	defer clientRaw.Close()
+
+	go h.HandleMITM(serverRaw, upstream.Listener.Addr().String())
+
+	// Client requests only http/1.1 — no h2
+	clientTLS := tls.Client(clientRaw, &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"http/1.1"},
+	})
+	if err := clientTLS.Handshake(); err != nil {
+		t.Fatalf("TLS handshake: %v", err)
+	}
+	if got := clientTLS.ConnectionState().NegotiatedProtocol; got != "http/1.1" {
+		t.Fatalf("expected http/1.1, got %q", got)
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "https://"+upstream.Listener.Addr().String()+"/v1/chat", bytes.NewBufferString(`{"hello":true}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return clientTLS, nil
+			},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if string(gotBody) != `{"hello":true}` {
+		t.Fatalf("upstream body = %q", gotBody)
+	}
 }
 
 func TestLogAuditBodyPreviewCanBeDisabledPerDomain(t *testing.T) {

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/http2"
+
 	"velar/internal/audit"
 	"velar/internal/classifier"
 	"velar/internal/config"
@@ -66,13 +68,32 @@ func (h *Handler) HandleMITM(clientConn net.Conn, host string) {
 		_ = clientConn.Close()
 		return
 	}
-	tlsClient := tls.Server(clientConn, &tls.Config{Certificates: []tls.Certificate{*cert}})
+	tlsClient := tls.Server(clientConn, &tls.Config{
+		Certificates: []tls.Certificate{*cert},
+		NextProtos:   []string{"h2", "http/1.1"},
+	})
 	if err := tlsClient.Handshake(); err != nil {
 		log.Printf("MITM: handshake failed for %s: %v", host, err)
 		_ = tlsClient.Close()
 		return
 	}
 
+	if tlsClient.ConnectionState().NegotiatedProtocol == "h2" {
+		log.Printf("MITM: serving HTTP/2 for %s", host)
+		h.serveHTTP2(tlsClient, host)
+	} else {
+		h.serveHTTP1(tlsClient, host)
+	}
+	log.Printf("MITM: completed for %s", host)
+}
+
+func (h *Handler) serveHTTP2(conn *tls.Conn, host string) {
+	(&http2.Server{}).ServeConn(conn, &http2.ServeConnOpts{
+		Handler: h.serverHandler(host),
+	})
+}
+
+func (h *Handler) serveHTTP1(conn *tls.Conn, host string) {
 	srv := &http.Server{
 		Handler:           h.serverHandler(host),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -80,9 +101,8 @@ func (h *Handler) HandleMITM(clientConn net.Conn, host string) {
 		ErrorLog:          log.New(io.Writer(&errorLogger{host: host}), "", 0),
 	}
 	listener := &singleConnListener{done: make(chan struct{})}
-	listener.conn = &notifyCloseConn{Conn: tlsClient, onClose: listener.Close}
+	listener.conn = &notifyCloseConn{Conn: conn, onClose: listener.Close}
 	_ = srv.Serve(listener)
-	log.Printf("MITM: completed for %s", host)
 }
 
 func (h *Handler) serverHandler(connectHost string) http.Handler {
@@ -178,6 +198,28 @@ func (h *Handler) serverHandler(connectHost string) http.Handler {
 		} else {
 			requestTrace.SanitizeEnd = time.Now()
 			log.Printf("sanitize skipped body size: %d", r.ContentLength)
+			// Body was skipped for sanitization (too large or unknown length),
+			// but we still try to capture a limited preview for audit logging.
+			ct := strings.ToLower(req.Header.Get("Content-Type"))
+			if req.Body != nil && (strings.Contains(ct, "application/json") || isGRPCContentType(ct)) {
+				peekSize := int64(maxAuditBodySize + 1)
+				if isGRPCContentType(ct) {
+					peekSize = 5 + 512 // gRPC frame header + max message preview
+				}
+				peek, _ := io.ReadAll(io.LimitReader(req.Body, peekSize))
+				req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peek), req.Body))
+				if len(peek) > 0 {
+					if isGRPCContentType(ct) {
+						reqPreview = grpcFramePreview(peek)
+					} else {
+						preview := string(peek)
+						if len(preview) > maxAuditBodySize {
+							preview = preview[:maxAuditBodySize]
+						}
+						reqPreview = strings.ReplaceAll(preview, "\n", "")
+					}
+				}
+			}
 		}
 
 		requestTrace.UpstreamStart = time.Now()
@@ -445,7 +487,11 @@ func readLimitedBody(rc io.ReadCloser, contentType string, limit int64) ([]byte,
 	if int64(len(body)) > limit {
 		return nil, "", fmt.Errorf("body exceeds limit")
 	}
-	if !strings.Contains(strings.ToLower(contentType), "application/json") {
+	ct := strings.ToLower(contentType)
+	if isGRPCContentType(ct) {
+		return body, grpcFramePreview(body), nil
+	}
+	if !strings.Contains(ct, "application/json") {
 		return body, "", nil
 	}
 	preview := string(body)
